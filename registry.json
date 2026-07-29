@@ -6,7 +6,7 @@
       "name": "Antigravity 动态模型同步",
       "description": "动态同步 Antigravity 可用模型，同时继续使用 CLIProxyAPI 官方内置执行器。",
       "author": "HunterWangwei",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "repository": "https://github.com/HunterWangwei/antigravity-model-sync",
       "homepage": "https://github.com/HunterWangwei/antigravity-model-sync",
       "license": "MIT",
@@ -21,30 +21,30 @@
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.3/antigravity-model-sync_1.0.3_linux_amd64.zip",
-            "sha256": "916589b7ce1121b3eefa4eb31a7f7470fbf2762f9574f0d6c34cc3e7b2bd593f",
-            "size": 1857974
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.4/antigravity-model-sync_1.0.4_linux_amd64.zip",
+            "sha256": "4e18ad24eafae1369fbdc7317f42706a0757d942ba6f6b0179aa99724a85419f",
+            "size": 1857770
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.3/antigravity-model-sync_1.0.3_linux_arm64.zip",
-            "sha256": "17ca5694908296ad0100db705dcbb4f587a5f47af369b689b195eb0e2ee8cd4b",
-            "size": 1700543
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.4/antigravity-model-sync_1.0.4_linux_arm64.zip",
+            "sha256": "129cdff07cc70091ea3623335cdc3883e9d1373fc338d50b211cc0ddb6e156fa",
+            "size": 1700542
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.3/antigravity-model-sync_1.0.3_windows_amd64.zip",
-            "sha256": "8b2e8574ad84314dfa3ed22cf032e16b151f4bededfba8b72e5d87d1b18f5c73",
-            "size": 1806963
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.4/antigravity-model-sync_1.0.4_windows_amd64.zip",
+            "sha256": "4ada633ef339e2feea2726f7e69efe588a506aff2deca3d67cf1d81529f99a44",
+            "size": 1806545
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.3/antigravity-model-sync_1.0.3_darwin_arm64.zip",
-            "sha256": "30d67fe8ea5a55df5517998b3991d7d1c7a65254da1b791116b3befdc619de2c",
-            "size": 930833
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.4/antigravity-model-sync_1.0.4_darwin_arm64.zip",
+            "sha256": "38d7a88332d4bfd2f28bffb801ba43590e38c92b85a22f8602945e3fe343098b",
+            "size": 930342
           }
         ]
       }
