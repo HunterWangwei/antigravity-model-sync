@@ -15,6 +15,7 @@
 - 官方静态元数据优先，远程数据只补全缺失字段。
 - 通过宿主 HTTP 桥接访问上游，继承 CLIProxyAPI 的代理和请求日志策略。
 - 不记录、不返回 Antigravity Access Token。
+- 提供中文同步状态接口，可查看最后同步时间、HTTP 状态和模型数量。
 
 ## 从插件商店安装
 
@@ -85,6 +86,14 @@ plugins:
 ```
 
 插件会按列表顺序尝试接口，并使用第一个成功返回模型的地址。
+
+## 查看同步状态
+
+```text
+GET /v0/management/plugins/antigravity-model-sync/status
+```
+
+该接口需要 Management Key，且不会返回 Access Token。
 
 ## 兼容性限制
 
