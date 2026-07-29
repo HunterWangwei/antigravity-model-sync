@@ -120,8 +120,28 @@ type managementResponse struct {
 }
 
 type managementRequest struct {
-	Method string
-	Path   string
+	Method         string
+	Path           string
+	Query          map[string][]string
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type hostAuthListResponse struct {
+	Files []hostAuthFileEntry `json:"files"`
+}
+
+type hostAuthFileEntry struct {
+	ID          string `json:"id"`
+	AuthIndex   string `json:"auth_index"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Provider    string `json:"provider"`
+	Disabled    bool   `json:"disabled"`
+	Unavailable bool   `json:"unavailable"`
+}
+
+type hostAuthGetResponse struct {
+	JSON json.RawMessage `json:"json"`
 }
 
 type syncStatus struct {
@@ -165,7 +185,7 @@ func registration() map[string]any {
 		"schema_version": 1,
 		"metadata": map[string]any{
 			"Name":             "Antigravity 动态模型同步",
-			"Version":          "1.0.4",
+			"Version":          "1.0.5",
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
@@ -242,6 +262,9 @@ func handleMethod(method string, request []byte, caller hostCaller) ([]byte, err
 			if err := json.Unmarshal(request, &req); err != nil {
 				return nil, fmt.Errorf("decode management request: %w", err)
 			}
+		}
+		if strings.Contains(req.Path, "/v0/resource/plugins/") && queryEnabled(req.Query, "refresh") {
+			refreshAccountStatuses(caller, req.HostCallbackID)
 		}
 		status := currentStatus()
 		if strings.Contains(req.Path, "/v0/resource/plugins/") {
@@ -395,6 +418,101 @@ func updateMergedModelCount(authID string, count int) {
 	statusMu.Unlock()
 }
 
+func queryEnabled(query map[string][]string, key string) bool {
+	for _, value := range query[key] {
+		if value == "1" || strings.EqualFold(value, "true") {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshAccountStatuses(caller hostCaller, callbackID string) {
+	if caller == nil {
+		return
+	}
+	var listed hostAuthListResponse
+	if err := callHostJSON(caller, "host.auth.list", callbackID, map[string]any{}, &listed); err != nil {
+		return
+	}
+	statuses := make(map[string]syncStatus)
+	configMu.RLock()
+	endpoints := append([]string(nil), configuredEndpoints...)
+	configMu.RUnlock()
+	for _, entry := range listed.Files {
+		if !strings.EqualFold(strings.TrimSpace(entry.Provider), provider) && !strings.EqualFold(strings.TrimSpace(entry.Type), provider) {
+			continue
+		}
+		authID := strings.TrimSpace(entry.ID)
+		if authID == "" {
+			authID = strings.TrimSpace(entry.AuthIndex)
+		}
+		if authID == "" {
+			authID = strings.TrimSpace(entry.Name)
+		}
+		if entry.Disabled || entry.Unavailable {
+			statuses[authID] = syncStatus{AuthID: authID, AttemptedAt: nowUTC(), Message: "账号已禁用或当前不可用，未执行同步。"}
+			continue
+		}
+		var auth hostAuthGetResponse
+		if err := callHostJSON(caller, "host.auth.get", callbackID, map[string]string{"auth_index": entry.AuthIndex}, &auth); err != nil {
+			statuses[authID] = syncStatus{AuthID: authID, AttemptedAt: nowUTC(), Message: "无法读取账号凭据，未执行同步。"}
+			continue
+		}
+		var metadata map[string]any
+		_ = json.Unmarshal(auth.JSON, &metadata)
+		token := extractAccessToken(metadata, auth.JSON)
+		if token == "" {
+			statuses[authID] = syncStatus{AuthID: authID, AttemptedAt: nowUTC(), Message: "未找到 access_token，未执行同步。"}
+			continue
+		}
+		remote := fetchRemoteModels(caller, authID, callbackID, token, metadata, nil, endpoints)
+		models, err := loadStaticModels()
+		if err == nil {
+			updateMergedModelCount(authID, len(mergeModels(models, remote)))
+		}
+		statusMu.RLock()
+		status, ok := accountStatuses[authID]
+		statusMu.RUnlock()
+		if ok {
+			statuses[authID] = status
+		}
+	}
+	statusMu.Lock()
+	accountStatuses = statuses
+	statusMu.Unlock()
+}
+
+func callHostJSON(caller hostCaller, method, callbackID string, request any, response any) error {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	if callbackID != "" {
+		var fields map[string]any
+		if err = json.Unmarshal(payload, &fields); err != nil {
+			return err
+		}
+		fields["host_callback_id"] = callbackID
+		payload, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+	}
+	raw, err := caller(method, payload)
+	if err != nil {
+		return err
+	}
+	var env envelope
+	if err = json.Unmarshal(raw, &env); err != nil {
+		return err
+	}
+	if !env.OK {
+		return errors.New("host callback failed")
+	}
+	return json.Unmarshal(env.Result, response)
+}
+
 func currentStatus() statusResponse {
 	statusMu.RLock()
 	accounts := make([]syncStatus, 0, len(accountStatuses))
@@ -403,7 +521,7 @@ func currentStatus() statusResponse {
 	}
 	statusMu.RUnlock()
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].AuthID < accounts[j].AuthID })
-	return statusResponse{PluginVersion: "1.0.4", UserAgent: userAgent, Accounts: accounts}
+	return statusResponse{PluginVersion: "1.0.5", UserAgent: userAgent, Accounts: accounts}
 }
 
 func buildStatusHTML(status statusResponse) []byte {
@@ -423,7 +541,7 @@ func buildStatusHTML(status statusResponse) []byte {
 			html.EscapeString(account.AttemptedAt), html.EscapeString(account.Endpoint), account.HTTPStatus,
 			account.RemoteModelCount, account.MergedModelCount, html.EscapeString(account.Message))
 	}
-	page := fmt.Sprintf(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Antigravity 模型同步</title><style>:root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif}body{margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1100px;margin:auto;padding:32px 20px}.hero{padding:28px;border:1px solid #263453;border-radius:18px;background:linear-gradient(135deg,#111a31,#172442)}h1{margin:0 0 8px;font-size:28px}.sub{color:#aebbd2;margin:0}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}.pill{padding:7px 11px;border-radius:999px;background:#243353;color:#dbe7ff;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:20px}.card{border:1px solid #263453;border-radius:16px;background:#111a2d;padding:20px}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.card h2{font-size:16px;margin:0;overflow-wrap:anywhere}.badge{font-size:12px;padding:5px 9px;border-radius:999px;white-space:nowrap}.success{background:#123d30;color:#75e2b5}.failed{background:#4a2529;color:#ffadb5}dl{display:grid;grid-template-columns:105px 1fr;gap:10px;margin:20px 0}dt{color:#8fa0bb}dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.message{margin:0;padding:12px;border-radius:10px;background:#0b1325;color:#c7d3e8}.empty{margin-top:20px;padding:24px;border:1px dashed #405170;border-radius:14px;color:#aebbd2}</style></head><body><main class="wrap"><section class="hero"><h1>Antigravity 动态模型同步</h1><p class="sub">查看插件的最近同步结果。页面不会显示 Access Token。</p><div class="meta"><span class="pill">插件版本 %s</span><span class="pill">User-Agent: %s</span><span class="pill">账号数 %d</span></div></section><section class="grid">%s</section></main></body></html>`,
+	page := fmt.Sprintf(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Antigravity 模型同步</title><style>:root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif}body{margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1100px;margin:auto;padding:32px 20px}.hero{padding:28px;border:1px solid #263453;border-radius:18px;background:linear-gradient(135deg,#111a31,#172442)}.hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap}h1{margin:0 0 8px;font-size:28px}.sub{color:#aebbd2;margin:0}.refresh{border:1px solid #5079c8;border-radius:10px;background:#2b5db5;color:#fff;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}.refresh:hover{background:#3670d2}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}.pill{padding:7px 11px;border-radius:999px;background:#243353;color:#dbe7ff;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:20px}.card{border:1px solid #263453;border-radius:16px;background:#111a2d;padding:20px}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.card h2{font-size:16px;margin:0;overflow-wrap:anywhere}.badge{font-size:12px;padding:5px 9px;border-radius:999px;white-space:nowrap}.success{background:#123d30;color:#75e2b5}.failed{background:#4a2529;color:#ffadb5}dl{display:grid;grid-template-columns:105px 1fr;gap:10px;margin:20px 0}dt{color:#8fa0bb}dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.message{margin:0;padding:12px;border-radius:10px;background:#0b1325;color:#c7d3e8}.empty{margin-top:20px;padding:24px;border:1px dashed #405170;border-radius:14px;color:#aebbd2}</style></head><body><main class="wrap"><section class="hero"><div class="hero-head"><div><h1>Antigravity 动态模型同步</h1><p class="sub">查看插件的最近同步结果。页面不会显示 Access Token。</p></div><a class="refresh" href="?refresh=1">手动刷新</a></div><div class="meta"><span class="pill">插件版本 %s</span><span class="pill">User-Agent: %s</span><span class="pill">账号数 %d</span></div></section><section class="grid">%s</section></main></body></html>`,
 		html.EscapeString(status.PluginVersion), html.EscapeString(status.UserAgent), len(status.Accounts), rows.String())
 	return []byte(page)
 }
