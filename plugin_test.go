@@ -99,6 +99,39 @@ func TestManagementResourceRendersChineseHTML(t *testing.T) {
 	if !strings.Contains(string(response.Body), "Antigravity 动态模型同步") {
 		t.Fatalf("unexpected page: %s", response.Body)
 	}
+	if !strings.Contains(string(response.Body), "手动刷新") {
+		t.Fatalf("refresh button missing: %s", response.Body)
+	}
+}
+
+func TestManagementRefreshReconcilesAccounts(t *testing.T) {
+	statusMu.Lock()
+	accountStatuses = map[string]syncStatus{"deleted-auth": {AuthID: "deleted-auth"}}
+	statusMu.Unlock()
+	caller := func(method string, payload []byte) ([]byte, error) {
+		if !strings.Contains(string(payload), `"host_callback_id":"callback-refresh"`) {
+			t.Fatalf("callback id missing from %s payload: %s", method, payload)
+		}
+		switch method {
+		case "host.auth.list":
+			return okEnvelope(hostAuthListResponse{Files: []hostAuthFileEntry{{ID: "new-auth", AuthIndex: "idx-new", Provider: provider}}})
+		case "host.auth.get":
+			return okEnvelope(hostAuthGetResponse{JSON: json.RawMessage(`{"access_token":"new-token"}`)})
+		case "host.http.do":
+			return okEnvelope(httpResponse{StatusCode: 200, Body: []byte(`{"models":{"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro"}}}`)})
+		default:
+			t.Fatalf("unexpected host method %q", method)
+			return nil, nil
+		}
+	}
+	request := []byte(`{"Method":"GET","Path":"/v0/resource/plugins/antigravity-model-sync/status","Query":{"refresh":["1"]},"host_callback_id":"callback-refresh"}`)
+	if _, err := handleMethod("management.handle", request, caller); err != nil {
+		t.Fatal(err)
+	}
+	status := currentStatus()
+	if len(status.Accounts) != 1 || status.Accounts[0].AuthID != "new-auth" || !status.Accounts[0].Success || status.Accounts[0].RemoteModelCount != 1 {
+		t.Fatalf("status = %#v", status)
+	}
 }
 
 func TestNonAntigravityIgnored(t *testing.T) {
