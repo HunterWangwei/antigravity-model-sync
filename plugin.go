@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"sort"
 	"strings"
 	"sync"
@@ -102,13 +103,25 @@ type managementRoute struct {
 }
 
 type managementRegistration struct {
-	Routes []managementRoute
+	Routes    []managementRoute
+	Resources []resourceRoute
+}
+
+type resourceRoute struct {
+	Path        string
+	Menu        string
+	Description string
 }
 
 type managementResponse struct {
 	StatusCode int
 	Headers    map[string][]string
 	Body       []byte
+}
+
+type managementRequest struct {
+	Method string
+	Path   string
 }
 
 type syncStatus struct {
@@ -152,7 +165,7 @@ func registration() map[string]any {
 		"schema_version": 1,
 		"metadata": map[string]any{
 			"Name":             "Antigravity 动态模型同步",
-			"Version":          "1.0.2",
+			"Version":          "1.0.3",
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
@@ -211,13 +224,34 @@ func handleMethod(method string, request []byte, caller hostCaller) ([]byte, err
 		updateMergedModelCount(req.AuthID, len(merged))
 		return okEnvelope(modelResponse{Provider: provider, Models: merged})
 	case "management.register":
-		return okEnvelope(managementRegistration{Routes: []managementRoute{{
-			Method:      "GET",
-			Path:        "/plugins/antigravity-model-sync/status",
-			Description: "查看 Antigravity 动态模型同步状态。",
-		}}})
+		return okEnvelope(managementRegistration{
+			Routes: []managementRoute{{
+				Method:      "GET",
+				Path:        "/plugins/antigravity-model-sync/status",
+				Description: "查看 Antigravity 动态模型同步状态。",
+			}},
+			Resources: []resourceRoute{{
+				Path:        "/status",
+				Menu:        "Antigravity 模型同步",
+				Description: "查看各账号的动态模型同步结果。",
+			}},
+		})
 	case "management.handle":
-		body, err := json.Marshal(currentStatus())
+		var req managementRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &req); err != nil {
+				return nil, fmt.Errorf("decode management request: %w", err)
+			}
+		}
+		status := currentStatus()
+		if strings.Contains(req.Path, "/v0/resource/plugins/") {
+			return okEnvelope(managementResponse{
+				StatusCode: 200,
+				Headers:    map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+				Body:       buildStatusHTML(status),
+			})
+		}
+		body, err := json.Marshal(status)
 		if err != nil {
 			return nil, fmt.Errorf("encode sync status: %w", err)
 		}
@@ -369,7 +403,29 @@ func currentStatus() statusResponse {
 	}
 	statusMu.RUnlock()
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].AuthID < accounts[j].AuthID })
-	return statusResponse{PluginVersion: "1.0.2", UserAgent: userAgent, Accounts: accounts}
+	return statusResponse{PluginVersion: "1.0.3", UserAgent: userAgent, Accounts: accounts}
+}
+
+func buildStatusHTML(status statusResponse) []byte {
+	var rows strings.Builder
+	if len(status.Accounts) == 0 {
+		rows.WriteString(`<div class="empty">暂无同步记录。请确认已配置 Antigravity 账号，然后重启 CPA。</div>`)
+	}
+	for _, account := range status.Accounts {
+		stateClass := "failed"
+		stateText := "未成功"
+		if account.Success {
+			stateClass = "success"
+			stateText = "同步成功"
+		}
+		fmt.Fprintf(&rows, `<article class="card"><div class="card-head"><h2>%s</h2><span class="badge %s">%s</span></div><dl><dt>最后同步</dt><dd>%s</dd><dt>请求端点</dt><dd class="mono">%s</dd><dt>HTTP 状态</dt><dd>%d</dd><dt>远程模型</dt><dd>%d</dd><dt>合并后模型</dt><dd>%d</dd></dl><p class="message">%s</p></article>`,
+			html.EscapeString(account.AuthID), stateClass, stateText,
+			html.EscapeString(account.AttemptedAt), html.EscapeString(account.Endpoint), account.HTTPStatus,
+			account.RemoteModelCount, account.MergedModelCount, html.EscapeString(account.Message))
+	}
+	page := fmt.Sprintf(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Antigravity 模型同步</title><style>:root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif}body{margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1100px;margin:auto;padding:32px 20px}.hero{padding:28px;border:1px solid #263453;border-radius:18px;background:linear-gradient(135deg,#111a31,#172442)}h1{margin:0 0 8px;font-size:28px}.sub{color:#aebbd2;margin:0}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}.pill{padding:7px 11px;border-radius:999px;background:#243353;color:#dbe7ff;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:20px}.card{border:1px solid #263453;border-radius:16px;background:#111a2d;padding:20px}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.card h2{font-size:16px;margin:0;overflow-wrap:anywhere}.badge{font-size:12px;padding:5px 9px;border-radius:999px;white-space:nowrap}.success{background:#123d30;color:#75e2b5}.failed{background:#4a2529;color:#ffadb5}dl{display:grid;grid-template-columns:105px 1fr;gap:10px;margin:20px 0}dt{color:#8fa0bb}dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.message{margin:0;padding:12px;border-radius:10px;background:#0b1325;color:#c7d3e8}.empty{margin-top:20px;padding:24px;border:1px dashed #405170;border-radius:14px;color:#aebbd2}</style></head><body><main class="wrap"><section class="hero"><h1>Antigravity 动态模型同步</h1><p class="sub">查看插件的最近同步结果。页面不会显示 Access Token。</p><div class="meta"><span class="pill">插件版本 %s</span><span class="pill">User-Agent: %s</span><span class="pill">账号数 %d</span></div></section><section class="grid">%s</section></main></body></html>`,
+		html.EscapeString(status.PluginVersion), html.EscapeString(status.UserAgent), len(status.Accounts), rows.String())
+	return []byte(page)
 }
 
 func parseRemoteModels(body []byte) []modelInfo {
