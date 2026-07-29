@@ -76,6 +76,24 @@ func TestManagementStatusDoesNotExposeToken(t *testing.T) {
 	}
 }
 
+func TestManagementResourceRendersChineseHTML(t *testing.T) {
+	raw, err := handleMethod("management.handle", []byte(`{"Path":"/v0/resource/plugins/antigravity-model-sync/status"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var response managementResponse
+	if err := json.Unmarshal(env.Result, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(response.Body), "Antigravity 动态模型同步") {
+		t.Fatalf("unexpected page: %s", response.Body)
+	}
+}
+
 func TestNonAntigravityIgnored(t *testing.T) {
 	raw, err := handleMethod("model.for_auth", []byte(`{"AuthProvider":"codex"}`), nil)
 	if err != nil {
