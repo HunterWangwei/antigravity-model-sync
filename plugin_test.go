@@ -66,6 +66,13 @@ func TestFetchAddsOfficialUserAgent(t *testing.T) {
 	}
 }
 
+func TestParseRemoteModelsKeepsEveryNonEmptyModel(t *testing.T) {
+	models := parseRemoteModels([]byte(`{"models":{"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro"},"chat_20706":{"displayName":"Chat"},"":{"displayName":"Empty"}}}`))
+	if len(models) != 2 || models[0].ID != "chat_20706" || models[1].ID != "gemini-2.5-pro" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
 func TestManagementStatusDoesNotExposeToken(t *testing.T) {
 	raw, err := handleMethod("management.handle", nil, nil)
 	if err != nil {
