@@ -42,6 +42,8 @@ The plugin then appears in the CLIProxyAPI plugin store. Install it there and re
 
 The registry uses direct, SHA-256-verified release artifact URLs. Installation does not consume the GitHub Releases API rate limit and does not require a GitHub token.
 
+Synchronization diagnostics are available from the authenticated Management API at `GET /v0/management/plugins/antigravity-model-sync/status`. The response never includes access tokens.
+
 ## Configure
 
 ```yaml
