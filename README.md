@@ -40,6 +40,8 @@ plugins:
 
 The plugin then appears in the CLIProxyAPI plugin store. Install it there and restart CLIProxyAPI so the newly installed native library can be loaded.
 
+The registry uses direct, SHA-256-verified release artifact URLs. Installation does not consume the GitHub Releases API rate limit and does not require a GitHub token.
+
 ## Configure
 
 ```yaml

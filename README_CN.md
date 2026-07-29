@@ -34,6 +34,8 @@ plugins:
 
 重启 CLIProxyAPI 后，在插件商店中安装“Antigravity 动态模型同步”。原生动态库安装完成后需要再次重启 CLIProxyAPI 才能加载。
 
+插件源使用带 SHA-256 校验的直接下载清单，安装过程不依赖 GitHub Release API 额度，也无需配置 GitHub Token。
+
 Docker 部署时，请确保插件目录可写且已持久化：
 
 ```yaml

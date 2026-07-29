@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "plugins": [
     {
       "id": "antigravity-model-sync",
@@ -16,7 +16,37 @@
         "model-sync"
       ],
       "install": {
-        "type": "github-release"
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.1/antigravity-model-sync_1.0.1_linux_amd64.zip",
+            "sha256": "830bc6434be473f7e985e6a78cfa0df6d1df31b40b2e51e0ff7a693bb451671c",
+            "size": 1742784
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.1/antigravity-model-sync_1.0.1_linux_arm64.zip",
+            "sha256": "63a29fd030cd9a8fddcd1698ba4a9a8fce3ed55f1f4bc547ae8161fb2698310f",
+            "size": 1594643
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.1/antigravity-model-sync_1.0.1_windows_amd64.zip",
+            "sha256": "01dc50f5ed8644dcacf5ee8946aa1b22be13eb4aa4cfae5da99bdb99b76dae7a",
+            "size": 1701618
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/HunterWangwei/antigravity-model-sync/releases/download/v1.0.1/antigravity-model-sync_1.0.1_darwin_arm64.zip",
+            "sha256": "2450d6f35bb82d7df5de7adc07510aa15482589b03cd2615bc9a872f003d2b91",
+            "size": 892670
+          }
+        ]
       }
     }
   ]
