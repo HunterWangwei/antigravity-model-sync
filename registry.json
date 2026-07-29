@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "antigravity-model-sync",
+      "name": "Antigravity Model Sync",
+      "description": "Dynamically synchronizes Antigravity models while keeping the official CLIProxyAPI executor.",
+      "author": "HunterWangwei",
+      "version": "1.0.0",
+      "repository": "https://github.com/HunterWangwei/antigravity-model-sync",
+      "homepage": "https://github.com/HunterWangwei/antigravity-model-sync",
+      "license": "MIT",
+      "tags": [
+        "antigravity",
+        "model-provider",
+        "model-sync"
+      ],
+      "install": {
+        "type": "github-release"
+      }
+    }
+  ]
+}
