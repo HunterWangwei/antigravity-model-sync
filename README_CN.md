@@ -1,6 +1,6 @@
 # Antigravity 动态模型同步插件
 
-[English](README.md) | [简体中文](README_CN.md)
+[简体中文](README.md) | [English](README_EN.md)
 
 这是一个适用于 CLIProxyAPI v7.2.104 及以上版本的独立原生插件。插件会调用 Antigravity 的 `fetchAvailableModels` 接口获取当前账号可用模型，并与 CLIProxyAPI v7.2.104 的官方静态模型清单合并。
 
