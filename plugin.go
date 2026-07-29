@@ -165,7 +165,7 @@ func registration() map[string]any {
 		"schema_version": 1,
 		"metadata": map[string]any{
 			"Name":             "Antigravity 动态模型同步",
-			"Version":          "1.0.3",
+			"Version":          "1.0.4",
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
@@ -403,7 +403,7 @@ func currentStatus() statusResponse {
 	}
 	statusMu.RUnlock()
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].AuthID < accounts[j].AuthID })
-	return statusResponse{PluginVersion: "1.0.3", UserAgent: userAgent, Accounts: accounts}
+	return statusResponse{PluginVersion: "1.0.4", UserAgent: userAgent, Accounts: accounts}
 }
 
 func buildStatusHTML(status statusResponse) []byte {
@@ -436,7 +436,7 @@ func parseRemoteModels(body []byte) []modelInfo {
 	models := make([]modelInfo, 0, len(response.Models))
 	for id, remote := range response.Models {
 		id = strings.TrimSpace(id)
-		if id == "" || isInternalModel(id) {
+		if id == "" {
 			continue
 		}
 		displayName := strings.TrimSpace(remote.DisplayName)
@@ -447,15 +447,6 @@ func parseRemoteModels(body []byte) []modelInfo {
 	}
 	sort.Slice(models, func(i, j int) bool { return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID) })
 	return models
-}
-
-func isInternalModel(id string) bool {
-	switch strings.ToLower(id) {
-	case "chat_20706", "chat_23310", "tab_flash_lite_preview", "tab_jump_flash_lite_preview", "gemini-2.5-flash-thinking", "gemini-2.5-pro":
-		return true
-	default:
-		return false
-	}
 }
 
 func mergeModels(static, remote []modelInfo) []modelInfo {
