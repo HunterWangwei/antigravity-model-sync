@@ -8,12 +8,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	pluginName = "antigravity-model-sync"
 	provider   = "antigravity"
 	modelsPath = "/v1internal:fetchAvailableModels"
+	userAgent  = "antigravity/hub/2.2.1 darwin/arm64"
 )
 
 var defaultEndpoints = []string{
@@ -92,6 +94,40 @@ type httpResponse struct {
 	Body       []byte              `json:"Body"`
 }
 
+type managementRoute struct {
+	Method      string
+	Path        string
+	Menu        string
+	Description string
+}
+
+type managementRegistration struct {
+	Routes []managementRoute
+}
+
+type managementResponse struct {
+	StatusCode int
+	Headers    map[string][]string
+	Body       []byte
+}
+
+type syncStatus struct {
+	AuthID           string `json:"auth_id"`
+	AttemptedAt      string `json:"attempted_at"`
+	Endpoint         string `json:"endpoint,omitempty"`
+	HTTPStatus       int    `json:"http_status,omitempty"`
+	RemoteModelCount int    `json:"remote_model_count"`
+	MergedModelCount int    `json:"merged_model_count"`
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
+}
+
+type statusResponse struct {
+	PluginVersion string       `json:"plugin_version"`
+	UserAgent     string       `json:"user_agent"`
+	Accounts      []syncStatus `json:"accounts"`
+}
+
 type remoteResponse struct {
 	Models map[string]remoteModel `json:"models"`
 }
@@ -107,6 +143,8 @@ type hostCaller func(method string, payload []byte) ([]byte, error)
 var (
 	configMu            sync.RWMutex
 	configuredEndpoints = append([]string(nil), defaultEndpoints...)
+	statusMu            sync.RWMutex
+	accountStatuses     = make(map[string]syncStatus)
 )
 
 func registration() map[string]any {
@@ -114,14 +152,14 @@ func registration() map[string]any {
 		"schema_version": 1,
 		"metadata": map[string]any{
 			"Name":             "Antigravity 动态模型同步",
-			"Version":          "1.0.1",
+			"Version":          "1.0.2",
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
 				{"Name": "endpoints", "Type": "array", "Description": "可选，按顺序尝试的 Antigravity API 基础地址列表。"},
 			},
 		},
-		"capabilities": map[string]any{"model_provider": true},
+		"capabilities": map[string]any{"model_provider": true, "management_api": true},
 	}
 }
 
@@ -157,14 +195,37 @@ func handleMethod(method string, request []byte, caller hostCaller) ([]byte, err
 			return nil, err
 		}
 		token := extractAccessToken(req.Metadata, req.StorageJSON)
-		if token == "" || caller == nil {
+		if token == "" {
+			recordSyncStatus(syncStatus{AuthID: req.AuthID, AttemptedAt: nowUTC(), MergedModelCount: len(models), Message: "未找到 access_token，已使用官方静态模型。"})
+			return okEnvelope(modelResponse{Provider: provider, Models: models})
+		}
+		if caller == nil {
+			recordSyncStatus(syncStatus{AuthID: req.AuthID, AttemptedAt: nowUTC(), MergedModelCount: len(models), Message: "宿主 HTTP 回调不可用，已使用官方静态模型。"})
 			return okEnvelope(modelResponse{Provider: provider, Models: models})
 		}
 		configMu.RLock()
 		endpoints := append([]string(nil), configuredEndpoints...)
 		configMu.RUnlock()
-		remote := fetchRemoteModels(caller, req.HostCallbackID, token, req.Metadata, req.Attributes, endpoints)
-		return okEnvelope(modelResponse{Provider: provider, Models: mergeModels(models, remote)})
+		remote := fetchRemoteModels(caller, req.AuthID, req.HostCallbackID, token, req.Metadata, req.Attributes, endpoints)
+		merged := mergeModels(models, remote)
+		updateMergedModelCount(req.AuthID, len(merged))
+		return okEnvelope(modelResponse{Provider: provider, Models: merged})
+	case "management.register":
+		return okEnvelope(managementRegistration{Routes: []managementRoute{{
+			Method:      "GET",
+			Path:        "/plugins/antigravity-model-sync/status",
+			Description: "查看 Antigravity 动态模型同步状态。",
+		}}})
+	case "management.handle":
+		body, err := json.Marshal(currentStatus())
+		if err != nil {
+			return nil, fmt.Errorf("encode sync status: %w", err)
+		}
+		return okEnvelope(managementResponse{
+			StatusCode: 200,
+			Headers:    map[string][]string{"Content-Type": {"application/json; charset=utf-8"}},
+			Body:       body,
+		})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -200,7 +261,7 @@ func stringValue(values map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
-func fetchRemoteModels(caller hostCaller, callbackID, token string, metadata map[string]any, attributes map[string]string, endpoints []string) []modelInfo {
+func fetchRemoteModels(caller hostCaller, authID, callbackID, token string, metadata map[string]any, attributes map[string]string, endpoints []string) []modelInfo {
 	if base := strings.TrimSpace(attributes["base_url"]); base != "" {
 		endpoints = []string{base}
 	} else if base := stringValue(metadata, "base_url"); base != "" {
@@ -211,37 +272,104 @@ func fetchRemoteModels(caller hostCaller, callbackID, token string, metadata map
 		body, _ = json.Marshal(map[string]string{"project": project})
 	}
 	for _, endpoint := range endpoints {
+		endpoint = strings.TrimRight(endpoint, "/")
+		status := syncStatus{AuthID: authID, AttemptedAt: nowUTC(), Endpoint: endpoint, Message: "正在同步。"}
 		req := httpRequest{
 			HostCallbackID: callbackID,
 			Method:         "POST",
-			URL:            strings.TrimRight(endpoint, "/") + modelsPath,
+			URL:            endpoint + modelsPath,
 			Headers: map[string][]string{
 				"Authorization": {"Bearer " + token},
 				"Content-Type":  {"application/json"},
+				"User-Agent":    {userAgent},
 			},
 			Body: body,
 		}
 		payload, err := json.Marshal(req)
 		if err != nil {
+			status.Message = "构建请求失败。"
+			recordSyncStatus(status)
 			continue
 		}
 		raw, err := caller("host.http.do", payload)
 		if err != nil {
+			status.Message = "宿主 HTTP 请求失败。"
+			recordSyncStatus(status)
 			continue
 		}
 		var env envelope
-		if json.Unmarshal(raw, &env) != nil || !env.OK {
+		if json.Unmarshal(raw, &env) != nil {
+			status.Message = "无法解析宿主 HTTP 响应。"
+			recordSyncStatus(status)
+			continue
+		}
+		if !env.OK {
+			status.Message = "宿主 HTTP 回调返回错误。"
+			recordSyncStatus(status)
 			continue
 		}
 		var response httpResponse
-		if json.Unmarshal(env.Result, &response) != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
+		if json.Unmarshal(env.Result, &response) != nil {
+			status.Message = "无法解析 Antigravity HTTP 响应。"
+			recordSyncStatus(status)
+			continue
+		}
+		status.HTTPStatus = response.StatusCode
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			status.Message = fmt.Sprintf("Antigravity 接口返回 HTTP %d。", response.StatusCode)
+			recordSyncStatus(status)
 			continue
 		}
 		if models := parseRemoteModels(response.Body); len(models) > 0 {
+			status.Success = true
+			status.RemoteModelCount = len(models)
+			status.Message = "远程模型同步成功。"
+			recordSyncStatus(status)
 			return models
 		}
+		status.Message = "Antigravity 接口未返回可用模型。"
+		recordSyncStatus(status)
 	}
 	return nil
+}
+
+func nowUTC() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func recordSyncStatus(status syncStatus) {
+	key := strings.TrimSpace(status.AuthID)
+	if key == "" {
+		key = "unknown"
+	}
+	status.AuthID = key
+	statusMu.Lock()
+	accountStatuses[key] = status
+	statusMu.Unlock()
+}
+
+func updateMergedModelCount(authID string, count int) {
+	key := strings.TrimSpace(authID)
+	if key == "" {
+		key = "unknown"
+	}
+	statusMu.Lock()
+	status := accountStatuses[key]
+	status.AuthID = key
+	status.MergedModelCount = count
+	accountStatuses[key] = status
+	statusMu.Unlock()
+}
+
+func currentStatus() statusResponse {
+	statusMu.RLock()
+	accounts := make([]syncStatus, 0, len(accountStatuses))
+	for _, status := range accountStatuses {
+		accounts = append(accounts, status)
+	}
+	statusMu.RUnlock()
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].AuthID < accounts[j].AuthID })
+	return statusResponse{PluginVersion: "1.0.2", UserAgent: userAgent, Accounts: accounts}
 }
 
 func parseRemoteModels(body []byte) []modelInfo {
