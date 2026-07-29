@@ -3,10 +3,10 @@
   "plugins": [
     {
       "id": "antigravity-model-sync",
-      "name": "Antigravity Model Sync",
-      "description": "Dynamically synchronizes Antigravity models while keeping the official CLIProxyAPI executor.",
+      "name": "Antigravity 动态模型同步",
+      "description": "动态同步 Antigravity 可用模型，同时继续使用 CLIProxyAPI 官方内置执行器。",
       "author": "HunterWangwei",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "repository": "https://github.com/HunterWangwei/antigravity-model-sync",
       "homepage": "https://github.com/HunterWangwei/antigravity-model-sync",
       "license": "MIT",

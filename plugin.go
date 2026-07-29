@@ -113,12 +113,12 @@ func registration() map[string]any {
 	return map[string]any{
 		"schema_version": 1,
 		"metadata": map[string]any{
-			"Name":             pluginName,
-			"Version":          "1.0.0",
+			"Name":             "Antigravity 动态模型同步",
+			"Version":          "1.0.1",
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
-				{"Name": "endpoints", "Type": "array", "Description": "Optional ordered Antigravity API base URLs."},
+				{"Name": "endpoints", "Type": "array", "Description": "可选，按顺序尝试的 Antigravity API 基础地址列表。"},
 			},
 		},
 		"capabilities": map[string]any{"model_provider": true},

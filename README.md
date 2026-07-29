@@ -1,5 +1,7 @@
 # Antigravity Model Sync Plugin
 
+[English](README.md) | [简体中文](README_CN.md)
+
 Standalone native plugin for CLIProxyAPI v7.2.104+. It discovers the current models returned by Antigravity's `fetchAvailableModels` API and merges them with the official v7.2.104 static model catalog. CLIProxyAPI's built-in Antigravity executor remains responsible for requests.
 
 The plugin does not import CLIProxyAPI packages and can be built independently.
