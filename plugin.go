@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +15,11 @@ import (
 )
 
 const (
-	pluginName = "antigravity-model-sync"
-	provider   = "antigravity"
-	modelsPath = "/v1internal:fetchAvailableModels"
-	userAgent  = "antigravity/hub/2.2.1 darwin/arm64"
+	pluginName       = "antigravity-model-sync"
+	pluginVersion    = "1.0.6"
+	provider         = "antigravity"
+	modelsPath       = "/v1internal:fetchAvailableModels"
+	defaultUserAgent = "antigravity/hub/2.23.0 darwin/arm64"
 )
 
 var defaultEndpoints = []string{
@@ -176,20 +179,28 @@ type hostCaller func(method string, payload []byte) ([]byte, error)
 var (
 	configMu            sync.RWMutex
 	configuredEndpoints = append([]string(nil), defaultEndpoints...)
+	configuredUserAgent = defaultUserAgent
 	statusMu            sync.RWMutex
 	accountStatuses     = make(map[string]syncStatus)
 )
+
+// modelAliases mirrors gcli2api: expose the thinking/non-thinking twin when only one is returned.
+var modelAliases = map[string]string{
+	"claude-sonnet-4-6":        "claude-sonnet-4-6-thinking",
+	"claude-opus-4-6-thinking": "claude-opus-4-6",
+}
 
 func registration() map[string]any {
 	return map[string]any{
 		"schema_version": 1,
 		"metadata": map[string]any{
 			"Name":             "Antigravity 动态模型同步",
-			"Version":          "1.0.5",
+			"Version":          pluginVersion,
 			"Author":           "HunterWangwei",
 			"GitHubRepository": "https://github.com/HunterWangwei/antigravity-model-sync",
 			"ConfigFields": []map[string]any{
 				{"Name": "endpoints", "Type": "array", "Description": "可选，按顺序尝试的 Antigravity API 基础地址列表。"},
+				{"Name": "user-agent", "Type": "string", "Description": "可选，请求 Antigravity 时使用的 User-Agent，默认 " + defaultUserAgent + "。"},
 			},
 		},
 		"capabilities": map[string]any{"model_provider": true, "management_api": true},
@@ -207,6 +218,7 @@ func handleMethod(method string, request []byte, caller hostCaller) ([]byte, err
 		}
 		configMu.Lock()
 		configuredEndpoints = parseEndpoints(req.ConfigYAML)
+		configuredUserAgent = parseUserAgent(req.ConfigYAML)
 		configMu.Unlock()
 		return okEnvelope(registration())
 	case "model.static":
@@ -325,9 +337,9 @@ func fetchRemoteModels(caller hostCaller, authID, callbackID, token string, meta
 		endpoints = []string{base}
 	}
 	body := []byte(`{}`)
-	if project := stringValue(metadata, "project_id"); project != "" {
-		body, _ = json.Marshal(map[string]string{"project": project})
-	}
+	configMu.RLock()
+	ua := configuredUserAgent
+	configMu.RUnlock()
 	for _, endpoint := range endpoints {
 		endpoint = strings.TrimRight(endpoint, "/")
 		status := syncStatus{AuthID: authID, AttemptedAt: nowUTC(), Endpoint: endpoint, Message: "正在同步。"}
@@ -338,7 +350,10 @@ func fetchRemoteModels(caller hostCaller, authID, callbackID, token string, meta
 			Headers: map[string][]string{
 				"Authorization": {"Bearer " + token},
 				"Content-Type":  {"application/json"},
-				"User-Agent":    {userAgent},
+				"Accept":        {"*/*"},
+				"User-Agent":    {ua},
+				"requestType":   {"agent"},
+				"requestId":     {newRequestID()},
 			},
 			Body: body,
 		}
@@ -374,6 +389,9 @@ func fetchRemoteModels(caller hostCaller, authID, callbackID, token string, meta
 		status.HTTPStatus = response.StatusCode
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			status.Message = fmt.Sprintf("Antigravity 接口返回 HTTP %d。", response.StatusCode)
+			if response.StatusCode == 401 || response.StatusCode == 403 {
+				status.Message = fmt.Sprintf("Antigravity 接口返回 HTTP %d，access_token 可能已过期，已回退官方静态模型。", response.StatusCode)
+			}
 			recordSyncStatus(status)
 			continue
 		}
@@ -521,7 +539,10 @@ func currentStatus() statusResponse {
 	}
 	statusMu.RUnlock()
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].AuthID < accounts[j].AuthID })
-	return statusResponse{PluginVersion: "1.0.5", UserAgent: userAgent, Accounts: accounts}
+	configMu.RLock()
+	ua := configuredUserAgent
+	configMu.RUnlock()
+	return statusResponse{PluginVersion: pluginVersion, UserAgent: ua, Accounts: accounts}
 }
 
 func buildStatusHTML(status statusResponse) []byte {
@@ -563,26 +584,107 @@ func parseRemoteModels(body []byte) []modelInfo {
 		}
 		models = append(models, modelInfo{ID: id, Object: "model", OwnedBy: provider, Type: provider, DisplayName: displayName, Name: id, Description: displayName, ContextLength: remote.MaxTokens, MaxCompletionTokens: remote.MaxOutputTokens})
 	}
+	models = appendAliases(models)
 	sort.Slice(models, func(i, j int) bool { return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID) })
 	return models
 }
 
-func mergeModels(static, remote []modelInfo) []modelInfo {
-	result := append([]modelInfo(nil), static...)
-	indices := make(map[string]int, len(result))
-	for i := range result {
-		indices[strings.ToLower(strings.TrimSpace(result[i].ID))] = i
+// appendAliases adds gcli2api-style twin models when the upstream only returns one variant.
+func appendAliases(models []modelInfo) []modelInfo {
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		seen[strings.ToLower(m.ID)] = true
 	}
-	for _, candidate := range remote {
-		key := strings.ToLower(strings.TrimSpace(candidate.ID))
-		if index, exists := indices[key]; exists {
-			fillMissingModelFields(&result[index], candidate)
+	result := models
+	for _, m := range models {
+		alias, ok := modelAliases[strings.ToLower(m.ID)]
+		if !ok || seen[alias] {
 			continue
 		}
-		indices[key] = len(result)
+		seen[alias] = true
+		clone := m
+		clone.ID, clone.Name = alias, alias
+		result = append(result, clone)
+	}
+	return result
+}
+
+// mergeModels treats the remote list as the source of truth when it is available.
+// Static entries only contribute metadata the remote API does not return (Thinking,
+// missing token limits). If remote sync failed, the static list is used as a fallback.
+func mergeModels(static, remote []modelInfo) []modelInfo {
+	if len(remote) == 0 {
+		return append([]modelInfo(nil), static...)
+	}
+	byID := make(map[string]modelInfo, len(static))
+	for _, m := range static {
+		byID[strings.ToLower(strings.TrimSpace(m.ID))] = m
+	}
+	result := make([]modelInfo, 0, len(remote))
+	seen := make(map[string]bool, len(remote))
+	for _, candidate := range remote {
+		key := strings.ToLower(strings.TrimSpace(candidate.ID))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if s, ok := byID[key]; ok {
+			fillMissingModelFields(&candidate, s)
+			if candidate.Thinking == nil {
+				candidate.Thinking = s.Thinking
+			}
+		} else if candidate.Thinking == nil {
+			candidate.Thinking = inferThinking(candidate.ID)
+		}
 		result = append(result, candidate)
 	}
 	return result
+}
+
+// inferThinking gives models unknown to the static list the thinking budget of their family.
+func inferThinking(id string) *thinkingSupport {
+	lower := strings.ToLower(id)
+	switch {
+	case strings.Contains(lower, "image"):
+		return nil
+	case strings.HasPrefix(lower, "claude-"):
+		if strings.Contains(lower, "thinking") || strings.Contains(lower, "sonnet") {
+			return &thinkingSupport{Min: 1024, Max: 64000, ZeroAllowed: true, DynamicAllowed: true}
+		}
+		return nil
+	case strings.HasPrefix(lower, "gemini-") && strings.Contains(lower, "pro"):
+		return &thinkingSupport{Min: 1, Max: 65535, DynamicAllowed: true, Levels: []string{"low", "medium", "high"}}
+	case strings.HasPrefix(lower, "gemini-"):
+		return &thinkingSupport{Min: 1, Max: 65535, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high"}}
+	}
+	return nil
+}
+
+func newRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req-" + fmt.Sprint(time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b[:])
+	return "req-" + h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// parseUserAgent reads an optional top-level "user-agent" (or user_agent) key from the plugin config.
+func parseUserAgent(config []byte) string {
+	for _, line := range strings.Split(string(config), "\n") {
+		trimmed := strings.TrimSpace(line)
+		for _, key := range []string{"user-agent:", "user_agent:", "useragent:"} {
+			if len(trimmed) >= len(key) && strings.EqualFold(trimmed[:len(key)], key) {
+				value := strings.Trim(strings.TrimSpace(trimmed[len(key):]), "\"'")
+				if value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return defaultUserAgent
 }
 
 func fillMissingModelFields(dst *modelInfo, src modelInfo) {

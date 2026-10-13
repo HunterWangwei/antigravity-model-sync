@@ -83,9 +83,13 @@ plugins:
       endpoints:
         - "https://daily-cloudcode-pa.googleapis.com"
         - "https://cloudcode-pa.googleapis.com"
+      # 可选，默认 antigravity/hub/2.23.0 darwin/arm64；Antigravity 升级后可在此更新
+      user-agent: "antigravity/hub/2.23.0 darwin/arm64"
 ```
 
 插件会按列表顺序尝试接口，并使用第一个成功返回模型的地址。
+
+远程同步成功时以远程模型列表为准：已下架的模型会被移除，显示名称和 Token 限制使用远程值，内置静态清单只补充 Thinking 等远程未返回的元数据。远程同步失败（如 access_token 过期返回 401）时回退到内置静态清单。
 
 ## 查看同步状态
 

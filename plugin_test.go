@@ -15,12 +15,50 @@ func TestExtractAccessToken(t *testing.T) {
 	}
 }
 
-func TestMergeStaticWinsAndRemoteFillsMissing(t *testing.T) {
-	static := []modelInfo{{ID: "Model-A", DisplayName: "Static", ContextLength: 0}}
-	remote := []modelInfo{{ID: "model-a", DisplayName: "Remote", ContextLength: 123}, {ID: "model-b", DisplayName: "New"}}
+func TestMergeRemoteWinsAndStaticFillsMetadata(t *testing.T) {
+	thinking := &thinkingSupport{Min: 1, Max: 10}
+	static := []modelInfo{
+		{ID: "Model-A", DisplayName: "Static", ContextLength: 999, MaxCompletionTokens: 50, Thinking: thinking},
+		{ID: "retired-model", DisplayName: "Retired"},
+	}
+	remote := []modelInfo{{ID: "model-a", DisplayName: "Remote", ContextLength: 123}, {ID: "gemini-9-pro", DisplayName: "New"}}
 	got := mergeModels(static, remote)
-	if len(got) != 2 || got[0].DisplayName != "Static" || got[0].ContextLength != 123 || got[1].ID != "model-b" {
-		t.Fatalf("unexpected merge: %#v", got)
+	if len(got) != 2 {
+		t.Fatalf("retired static model should be dropped: %#v", got)
+	}
+	if got[0].DisplayName != "Remote" || got[0].ContextLength != 123 || got[0].MaxCompletionTokens != 50 || got[0].Thinking != thinking {
+		t.Fatalf("unexpected merged model: %#v", got[0])
+	}
+	if got[1].ID != "gemini-9-pro" || got[1].Thinking == nil {
+		t.Fatalf("new gemini model should get inferred thinking: %#v", got[1])
+	}
+}
+
+func TestMergeFallsBackToStaticWhenRemoteEmpty(t *testing.T) {
+	static := []modelInfo{{ID: "a"}, {ID: "b"}}
+	if got := mergeModels(static, nil); len(got) != 2 {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestParseRemoteModelsAddsAliases(t *testing.T) {
+	models := parseRemoteModels([]byte(`{"models":{"claude-sonnet-4-6":{"displayName":"Sonnet"},"claude-opus-4-6-thinking":{"displayName":"Opus"}}}`))
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	want := "claude-opus-4-6,claude-opus-4-6-thinking,claude-sonnet-4-6,claude-sonnet-4-6-thinking"
+	if strings.Join(ids, ",") != want {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
+func TestParseUserAgent(t *testing.T) {
+	if got := parseUserAgent([]byte("enabled: true\n")); got != defaultUserAgent {
+		t.Fatalf("got %q", got)
+	}
+	if got := parseUserAgent([]byte("enabled: true\nuser-agent: \"antigravity/hub/9.9.9 linux/amd64\"\n")); got != "antigravity/hub/9.9.9 linux/amd64" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -55,12 +93,21 @@ func TestFetchAddsOfficialUserAgent(t *testing.T) {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			t.Fatal(err)
 		}
-		if got := req.Headers["User-Agent"]; len(got) != 1 || got[0] != userAgent {
+		if got := req.Headers["User-Agent"]; len(got) != 1 || got[0] != defaultUserAgent {
 			t.Fatalf("user-agent = %#v", got)
+		}
+		if got := req.Headers["requestType"]; len(got) != 1 || got[0] != "agent" {
+			t.Fatalf("requestType = %#v", got)
+		}
+		if got := req.Headers["requestId"]; len(got) != 1 || !strings.HasPrefix(got[0], "req-") {
+			t.Fatalf("requestId = %#v", got)
+		}
+		if string(req.Body) != "{}" {
+			t.Fatalf("body = %s", req.Body)
 		}
 		return okEnvelope(httpResponse{StatusCode: 200, Body: []byte(`{"models":{"gemini-2.5-flash":{"displayName":"Gemini 2.5 Flash"}}}`)})
 	}
-	models := fetchRemoteModels(caller, "auth-ua", "callback", "secret-token", nil, nil, []string{"https://one"})
+	models := fetchRemoteModels(caller, "auth-ua", "callback", "secret-token", map[string]any{"project_id": "p1"}, nil, []string{"https://one"})
 	if len(models) != 1 || models[0].ID != "gemini-2.5-flash" {
 		t.Fatalf("models = %#v", models)
 	}
