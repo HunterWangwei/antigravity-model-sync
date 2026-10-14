@@ -16,7 +16,7 @@ import (
 
 const (
 	pluginName       = "antigravity-model-sync"
-	pluginVersion    = "1.0.6"
+	pluginVersion    = "1.0.7"
 	provider         = "antigravity"
 	modelsPath       = "/v1internal:fetchAvailableModels"
 	defaultUserAgent = "antigravity/hub/2.23.0 darwin/arm64"
@@ -153,6 +153,7 @@ type syncStatus struct {
 	Endpoint         string `json:"endpoint,omitempty"`
 	HTTPStatus       int    `json:"http_status,omitempty"`
 	RemoteModelCount int    `json:"remote_model_count"`
+	SkippedModels    int    `json:"skipped_model_count"`
 	MergedModelCount int    `json:"merged_model_count"`
 	Success          bool   `json:"success"`
 	Message          string `json:"message"`
@@ -172,6 +173,9 @@ type remoteModel struct {
 	DisplayName     string `json:"displayName"`
 	MaxTokens       int64  `json:"maxTokens"`
 	MaxOutputTokens int64  `json:"maxOutputTokens"`
+	// Disabled entries are listed for the account but rejected by generation
+	// endpoints (e.g. "Upgrade" / Ultra-only placeholders), so they are skipped.
+	Disabled bool `json:"disabled"`
 }
 
 type hostCaller func(method string, payload []byte) ([]byte, error)
@@ -395,10 +399,15 @@ func fetchRemoteModels(caller hostCaller, authID, callbackID, token string, meta
 			recordSyncStatus(status)
 			continue
 		}
-		if models := parseRemoteModels(response.Body); len(models) > 0 {
+		models, skipped := parseRemoteModels(response.Body)
+		status.SkippedModels = skipped
+		if len(models) > 0 {
 			status.Success = true
 			status.RemoteModelCount = len(models)
 			status.Message = "远程模型同步成功。"
+			if skipped > 0 {
+				status.Message = fmt.Sprintf("远程模型同步成功，已跳过 %d 个账号不可用（disabled）的模型。", skipped)
+			}
 			recordSyncStatus(status)
 			return models
 		}
@@ -557,25 +566,31 @@ func buildStatusHTML(status statusResponse) []byte {
 			stateClass = "success"
 			stateText = "同步成功"
 		}
-		fmt.Fprintf(&rows, `<article class="card"><div class="card-head"><h2>%s</h2><span class="badge %s">%s</span></div><dl><dt>最后同步</dt><dd>%s</dd><dt>请求端点</dt><dd class="mono">%s</dd><dt>HTTP 状态</dt><dd>%d</dd><dt>远程模型</dt><dd>%d</dd><dt>合并后模型</dt><dd>%d</dd></dl><p class="message">%s</p></article>`,
+		fmt.Fprintf(&rows, `<article class="card"><div class="card-head"><h2>%s</h2><span class="badge %s">%s</span></div><dl><dt>最后同步</dt><dd>%s</dd><dt>请求端点</dt><dd class="mono">%s</dd><dt>HTTP 状态</dt><dd>%d</dd><dt>远程模型</dt><dd>%d</dd><dt>跳过不可用</dt><dd>%d</dd><dt>合并后模型</dt><dd>%d</dd></dl><p class="message">%s</p></article>`,
 			html.EscapeString(account.AuthID), stateClass, stateText,
 			html.EscapeString(account.AttemptedAt), html.EscapeString(account.Endpoint), account.HTTPStatus,
-			account.RemoteModelCount, account.MergedModelCount, html.EscapeString(account.Message))
+			account.RemoteModelCount, account.SkippedModels, account.MergedModelCount, html.EscapeString(account.Message))
 	}
 	page := fmt.Sprintf(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Antigravity 模型同步</title><style>:root{color-scheme:light dark;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif}body{margin:0;background:#0b1020;color:#e8edf7}.wrap{max-width:1100px;margin:auto;padding:32px 20px}.hero{padding:28px;border:1px solid #263453;border-radius:18px;background:linear-gradient(135deg,#111a31,#172442)}.hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap}h1{margin:0 0 8px;font-size:28px}.sub{color:#aebbd2;margin:0}.refresh{border:1px solid #5079c8;border-radius:10px;background:#2b5db5;color:#fff;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}.refresh:hover{background:#3670d2}.meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}.pill{padding:7px 11px;border-radius:999px;background:#243353;color:#dbe7ff;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:20px}.card{border:1px solid #263453;border-radius:16px;background:#111a2d;padding:20px}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.card h2{font-size:16px;margin:0;overflow-wrap:anywhere}.badge{font-size:12px;padding:5px 9px;border-radius:999px;white-space:nowrap}.success{background:#123d30;color:#75e2b5}.failed{background:#4a2529;color:#ffadb5}dl{display:grid;grid-template-columns:105px 1fr;gap:10px;margin:20px 0}dt{color:#8fa0bb}dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.message{margin:0;padding:12px;border-radius:10px;background:#0b1325;color:#c7d3e8}.empty{margin-top:20px;padding:24px;border:1px dashed #405170;border-radius:14px;color:#aebbd2}</style></head><body><main class="wrap"><section class="hero"><div class="hero-head"><div><h1>Antigravity 动态模型同步</h1><p class="sub">查看插件的最近同步结果。页面不会显示 Access Token。</p></div><a class="refresh" href="?refresh=1">手动刷新</a></div><div class="meta"><span class="pill">插件版本 %s</span><span class="pill">User-Agent: %s</span><span class="pill">账号数 %d</span></div></section><section class="grid">%s</section></main></body></html>`,
 		html.EscapeString(status.PluginVersion), html.EscapeString(status.UserAgent), len(status.Accounts), rows.String())
 	return []byte(page)
 }
 
-func parseRemoteModels(body []byte) []modelInfo {
+// parseRemoteModels returns the callable models and how many disabled entries were skipped.
+func parseRemoteModels(body []byte) ([]modelInfo, int) {
 	var response remoteResponse
 	if json.Unmarshal(body, &response) != nil {
-		return nil
+		return nil, 0
 	}
 	models := make([]modelInfo, 0, len(response.Models))
+	skipped := 0
 	for id, remote := range response.Models {
 		id = strings.TrimSpace(id)
 		if id == "" {
+			continue
+		}
+		if remote.Disabled {
+			skipped++
 			continue
 		}
 		displayName := strings.TrimSpace(remote.DisplayName)
@@ -586,7 +601,7 @@ func parseRemoteModels(body []byte) []modelInfo {
 	}
 	models = appendAliases(models)
 	sort.Slice(models, func(i, j int) bool { return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID) })
-	return models
+	return models, skipped
 }
 
 // appendAliases adds gcli2api-style twin models when the upstream only returns one variant.

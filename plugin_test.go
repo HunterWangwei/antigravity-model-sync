@@ -42,7 +42,7 @@ func TestMergeFallsBackToStaticWhenRemoteEmpty(t *testing.T) {
 }
 
 func TestParseRemoteModelsAddsAliases(t *testing.T) {
-	models := parseRemoteModels([]byte(`{"models":{"claude-sonnet-4-6":{"displayName":"Sonnet"},"claude-opus-4-6-thinking":{"displayName":"Opus"}}}`))
+	models, _ := parseRemoteModels([]byte(`{"models":{"claude-sonnet-4-6":{"displayName":"Sonnet"},"claude-opus-4-6-thinking":{"displayName":"Opus"}}}`))
 	ids := make([]string, 0, len(models))
 	for _, m := range models {
 		ids = append(ids, m.ID)
@@ -114,9 +114,42 @@ func TestFetchAddsOfficialUserAgent(t *testing.T) {
 }
 
 func TestParseRemoteModelsKeepsEveryNonEmptyModel(t *testing.T) {
-	models := parseRemoteModels([]byte(`{"models":{"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro"},"chat_20706":{"displayName":"Chat"},"":{"displayName":"Empty"}}}`))
-	if len(models) != 2 || models[0].ID != "chat_20706" || models[1].ID != "gemini-2.5-pro" {
+	models, skipped := parseRemoteModels([]byte(`{"models":{"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro"},"chat_20706":{"displayName":"Chat"},"":{"displayName":"Empty"}}}`))
+	if len(models) != 2 || skipped != 0 || models[0].ID != "chat_20706" || models[1].ID != "gemini-2.5-pro" {
+		t.Fatalf("models = %#v skipped = %d", models, skipped)
+	}
+}
+
+// Shapes taken from real fetchAvailableModels responses for non-Ultra accounts.
+func TestParseRemoteModelsSkipsDisabledModels(t *testing.T) {
+	body := []byte(`{"models":{
+		"gemini-4-argon-disabled":{"displayName":"Gemini 4 Argon","disabled":true,"tagTitle":"Unavailable","tagDescription":"Gemini 4 Argon is currently available to Ultra plan subscribers."},
+		"gemini-4-argon-high":{"displayName":"Gemini 4 Argon","disabled":true,"tagTitle":"Upgrade"},
+		"gemini-4-argon-low":{"displayName":"Gemini 4 Argon","disabled":false},
+		"gemini-3-flash":{"displayName":"Gemini 3 Flash"}
+	}}`)
+	models, skipped := parseRemoteModels(body)
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	if skipped != 2 || strings.Join(ids, ",") != "gemini-3-flash,gemini-4-argon-low" {
+		t.Fatalf("ids = %v skipped = %d", ids, skipped)
+	}
+}
+
+func TestFetchRecordsSkippedDisabledModels(t *testing.T) {
+	accountStatuses = make(map[string]syncStatus)
+	caller := func(_ string, _ []byte) ([]byte, error) {
+		return okEnvelope(httpResponse{StatusCode: 200, Body: []byte(`{"models":{"gemini-3-flash":{"displayName":"Flash"},"gemini-4-argon-disabled":{"disabled":true}}}`)})
+	}
+	models := fetchRemoteModels(caller, "auth-skip", "callback", "secret-token", nil, nil, []string{"https://one"})
+	if len(models) != 1 || models[0].ID != "gemini-3-flash" {
 		t.Fatalf("models = %#v", models)
+	}
+	status := accountStatuses["auth-skip"]
+	if !status.Success || status.RemoteModelCount != 1 || status.SkippedModels != 1 || !strings.Contains(status.Message, "跳过 1 个") {
+		t.Fatalf("status = %#v", status)
 	}
 }
 
